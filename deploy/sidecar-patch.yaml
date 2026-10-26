@@ -1,0 +1,63 @@
+# Strategic merge patch for deployment/soju:
+#   kubectl -n soju patch deployment soju --patch-file deploy/sidecar-patch.yaml
+# - shareProcessNamespace: the sidecar can see the soju process (SIGHUP / SIGTERM).
+# - The ServiceAccount token is mounted ONLY in the sidecar, not in soju.
+spec:
+  template:
+    spec:
+      shareProcessNamespace: true
+      serviceAccountName: soju-admin
+      automountServiceAccountToken: false
+      containers:
+        - name: soju-admin
+          image: prietus/soju-admin:0.2.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: admin
+              containerPort: 8090
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SOJU_CONFIGMAP
+              value: soju-config
+            - name: SOJU_CONTAINER
+              value: soju
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/soju
+              readOnly: true
+            - name: kube-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: kube-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace

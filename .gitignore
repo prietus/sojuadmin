@@ -1,0 +1,5 @@
+# local build output
+/soju-admin
+*.db
+# real deployment values (hostnames etc.)
+*.local.yaml

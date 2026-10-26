@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soju admin</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f7d6d'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='16' font-weight='700' fill='white' text-anchor='middle'%3E%23%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="config-form.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<section id="login" class="login" hidden>
+  <form id="login-form" class="login-card">
+    <div class="brand"><span class="logo">#</span> soju admin</div>
+    <p class="muted">Sign in with a soju <b>admin</b> user.</p>
+    <label>Username <input name="username" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <p class="error" id="login-error" hidden></p>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+</section>
+
+<div id="app" class="shell" hidden>
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">#</span> soju admin</div>
+    <nav id="nav">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#users" data-view="users">Users &amp; networks</a>
+      <a href="#config" data-view="config">Configuration</a>
+      <a href="#database" data-view="database">Database</a>
+      <a href="#logs" data-view="logs">Logs</a>
+      <a href="#console" data-view="console">Console</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="muted small" id="whoami"></div>
+      <button class="btn ghost small" data-action="logout">Sign out</button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <section class="view" id="view-overview">
+      <header class="view-head">
+        <h1>Overview</h1>
+        <div class="actions">
+          <button class="btn" data-action="reload">Reload config (SIGHUP)</button>
+          <button class="btn danger" data-action="restart">Restart soju</button>
+        </div>
+      </header>
+      <div class="grid cards" id="overview-cards"></div>
+      <div class="panel">
+        <h2>Notices &amp; debugging</h2>
+        <form id="notice-form" class="inline-form">
+          <input name="text" placeholder="Message to every connected user…" required>
+          <button class="btn" type="submit">Send notice</button>
+        </form>
+        <div class="row gap">
+          <button class="btn ghost" data-action="debug" data-enabled="true">Enable debug</button>
+          <button class="btn ghost" data-action="debug" data-enabled="false">Disable debug</button>
+          <span class="muted small">Debug logging goes to the container's stderr and may leak sensitive data.</span>
+        </div>
+      </div>
+      <div class="panel" id="jobs-panel">
+        <h2>Recent operations</h2>
+        <div id="jobs-list" class="muted">—</div>
+      </div>
+    </section>
+
+    <section class="view" id="view-users" hidden>
+      <header class="view-head">
+        <h1>Users &amp; networks</h1>
+        <div class="actions"><button class="btn primary" data-action="new-user">New user</button></div>
+      </header>
+      <div class="split">
+        <div class="panel list-panel"><ul id="user-list" class="list"></ul></div>
+        <div class="panel" id="user-detail"><p class="muted">Select a user.</p></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-config" hidden>
+      <header class="view-head">
+        <h1>Configuration</h1>
+        <div class="actions">
+          <div class="segmented" id="config-mode">
+            <button class="active" data-mode="form">Form</button>
+            <button data-mode="raw">Raw file</button>
+          </div>
+          <button class="btn" data-action="revert-config">Discard changes</button>
+          <button class="btn primary" data-action="save-config">Review &amp; save…</button>
+        </div>
+      </header>
+      <p class="muted" id="config-meta"></p>
+      <div id="config-check"></div>
+      <div id="config-form"></div>
+      <textarea id="config-editor" class="code" spellcheck="false" hidden></textarea>
+      <details class="panel"><summary>File currently loaded in the container</summary><pre id="config-live" class="code"></pre></details>
+    </section>
+
+    <section class="view" id="view-database" hidden>
+      <header class="view-head">
+        <h1>Database</h1>
+        <div class="actions">
+          <button class="btn" data-action="backup">Create backup</button>
+          <button class="btn" data-action="check">Integrity check</button>
+          <button class="btn" data-action="vacuum">VACUUM</button>
+        </div>
+      </header>
+      <div class="grid cards" id="db-cards"></div>
+      <div class="panel">
+        <h2>Purge messages</h2>
+        <form id="purge-form" class="form-grid">
+          <label>Network
+            <select name="network_id" id="purge-network"><option value="0">All</option></select>
+          </label>
+          <label>Conversation
+            <select name="target_id" id="purge-target"><option value="0">All</option></select>
+          </label>
+          <label>Older than (days)
+            <input name="older_than_days" type="number" min="0" value="90">
+            <span class="hint">0 = every message</span>
+          </label>
+          <label class="check"><input type="checkbox" name="backup" checked> Back up first</label>
+          <label class="check"><input type="checkbox" name="vacuum" checked> VACUUM afterwards</label>
+          <div class="row gap span">
+            <button class="btn" type="button" data-action="purge-preview">Preview</button>
+            <button class="btn danger" type="submit">Purge</button>
+            <span id="purge-preview" class="muted"></span>
+          </div>
+        </form>
+        <p class="muted small">Tip: the <code>message-expiry</code> setting in Configuration makes soju delete old messages automatically every day.</p>
+      </div>
+      <div class="panel">
+        <h2>Messages per conversation</h2>
+        <div class="table-wrap"><table id="targets-table"></table></div>
+      </div>
+      <div class="panel">
+        <h2>Backups</h2>
+        <p class="muted small">Stored in <code>/data/backups</code> (same volume). To restore: scale the deployment to 0, copy the backup over <code>soju.db</code>, and scale back up.</p>
+        <div class="table-wrap"><table id="backups-table"></table></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-logs" hidden>
+      <header class="view-head">
+        <h1>Logs</h1>
+        <div class="actions">
+          <select id="logs-container"><option value="soju">soju</option><option value="soju-admin">soju-admin</option></select>
+          <select id="logs-tail"><option>200</option><option selected>500</option><option>2000</option></select>
+          <label class="check"><input type="checkbox" id="logs-previous"> Previous instance</label>
+          <label class="check"><input type="checkbox" id="logs-follow"> Auto (5 s)</label>
+          <button class="btn" data-action="refresh-logs">Refresh</button>
+        </div>
+      </header>
+      <input id="logs-filter" class="filter" placeholder="Filter lines…">
+      <pre id="logs-output" class="code logs"></pre>
+    </section>
+
+    <section class="view" id="view-console" hidden>
+      <header class="view-head"><h1>BouncerServ console</h1></header>
+      <p class="muted">Run any BouncerServ command as admin, or as a specific user (same as <code>sojuctl user run</code>). Type <code>help</code> for the list.</p>
+      <form id="console-form" class="inline-form">
+        <select name="as" id="console-as"><option value="">(admin)</option></select>
+        <input name="command" placeholder='e.g. network status · sasl status -network libera' autocomplete="off" required>
+        <button class="btn primary" type="submit">Run</button>
+      </form>
+      <pre id="console-output" class="code console"></pre>
+    </section>
+  </main>
+</div>
+
+<dialog id="modal">
+  <form method="dialog" id="modal-form">
+    <header><h2 id="modal-title"></h2></header>
+    <div id="modal-body"></div>
+    <p class="error" id="modal-error" hidden></p>
+    <footer>
+      <button class="btn ghost" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="modal-ok">OK</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="job-modal">
+  <header><h2 id="job-title"></h2><span id="job-status" class="badge"></span></header>
+  <pre id="job-log" class="code"></pre>
+  <footer><button class="btn" id="job-close">Close</button></footer>
+</dialog>
+
+<div id="toasts"></div>
+</body>
+</html>

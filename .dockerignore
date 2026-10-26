@@ -1,0 +1,4 @@
+testdata/
+*.db
+.git
+*.local.yaml
