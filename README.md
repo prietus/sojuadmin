@@ -1,6 +1,6 @@
 # soju-admin
 
-Web panel for a [soju](https://soju.im) v0.11.x IRC bouncer. Runs as a **sidecar** in soju's pod.
+Web panel for a [soju](https://soju.im) v0.11.x IRC bouncer. Designed to run as a **sidecar** in soju's Kubernetes pod; it also runs under systemd, Podman or Docker Compose with a few features disabled (see [Running outside Kubernetes](#running-outside-kubernetes)).
 
 | Feature | How |
 |---|---|
@@ -30,6 +30,53 @@ kubectl apply -f deploy/ingress.local.yaml   # copy of ingress.yaml with your ho
 
 Without an ingress: `kubectl -n soju port-forward svc/soju-admin 8090` and open http://localhost:8090
 (set `SECURE_COOKIE=false` on the sidecar, otherwise the session cookie isn't sent over plain http).
+
+## Running outside Kubernetes
+
+soju-admin also runs as a plain binary (systemd) or next to soju in a Podman pod or Docker Compose project. Most of it only needs the admin socket and the database file, but two features rely on the Kubernetes API and are disabled without it. At startup the log says `no Kubernetes API (logs and config editing disabled)`.
+
+| Feature | Outside Kubernetes |
+|---|---|
+| Users, networks, channels, SASL, notices, debug, console | Works (admin socket) |
+| Database stats, purge, VACUUM, integrity check, backups | Works (direct file access) |
+| Login | Works (soju's `User` table) |
+| Reload / restart soju | Works if the panel can see and signal the soju process (see below) |
+| Editing the config and MOTD | **Read only**: saving writes to the ConfigMap |
+| Logs | **Unavailable**: they come from `pods/log` |
+| Pod card on the overview | Not shown |
+
+### Reload and restart
+
+The panel finds the `soju` process in `/proc` and sends it signals: SIGHUP to reload, SIGTERM to restart. A restart only works if something brings soju back up after it exits cleanly:
+
+- **systemd on the same host**: the panel sees soju's process as is. Run both as the same user (`User=soju`) so it may signal soju, and set `Restart=always` in `soju.service`. `Restart=on-failure` is not enough, because soju exits with status 0 on SIGTERM.
+- **Podman pod**: containers in a pod don't share processes by default. Create the pod with `podman pod create --share +pid`, run soju with `--restart=always`, and mount soju's data directory in both containers.
+- **Docker Compose**: give the panel `pid: "service:soju"`, give soju `restart: always`, and share the data volume.
+
+### systemd example
+
+The defaults match the container layout; soju's usual Linux packaging uses other paths:
+
+```ini
+[Unit]
+Description=soju-admin web panel
+After=soju.service
+
+[Service]
+User=soju
+Environment=LISTEN=127.0.0.1:8090
+Environment=SOJU_ADMIN_SOCKET=/run/soju/admin
+Environment=SOJU_DB=/var/lib/soju/main.db
+Environment=BACKUP_DIR=/var/lib/soju/backups
+Environment=SOJU_CONFIG=/etc/soju/config
+ExecStart=/usr/local/bin/sojuadmin
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Build the binary with `go install github.com/prietus/sojuadmin@latest` (or `go build`). Put a TLS reverse proxy such as Caddy or nginx in front of it; serving it over plain http requires `SECURE_COOKIE=false`, or the session cookie is never sent.
 
 ## Environment
 
