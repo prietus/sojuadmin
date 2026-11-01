@@ -1,4 +1,4 @@
-module github.com/prietus/soju-admin
+module github.com/prietus/sojuadmin
 
 go 1.26.0
 
