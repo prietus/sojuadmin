@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"syscall"
@@ -141,11 +142,12 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/config/check", a.wrap(func(w http.ResponseWriter, r *http.Request, s *session) (any, error) {
 		var req struct {
 			Content string `json:"content"`
+			Motd    string `json:"motd"`
 		}
 		if err := decode(r, &req); err != nil {
 			return nil, err
 		}
-		return checkConfig(req.Content, a.cfg), nil
+		return checkConfig(req.Content, normalizeMotd(req.Motd), a.cfg), nil
 	}))
 	mux.HandleFunc("GET /api/logs", a.wrap(a.logs))
 
@@ -772,12 +774,21 @@ func (a *App) getConfig(w http.ResponseWriter, r *http.Request, s *session) (any
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"live": string(live), "path": a.cfg.SojuConfig, "editable": false, "admin_socket": a.cfg.SocketPath}
+	liveMotd, _ := os.ReadFile(a.cfg.MotdPath)
+	out := map[string]any{
+		"live": string(live), "path": a.cfg.SojuConfig, "editable": false, "admin_socket": a.cfg.SocketPath,
+		"motd_path": a.cfg.MotdPath, "motd": string(liveMotd),
+	}
 	if a.kube != nil && a.cfg.ConfigMap != "" {
-		if v, err := a.kube.ConfigMapKey(r.Context(), a.cfg.ConfigMap, a.cfg.ConfigMapKey); err != nil {
+		data, err := a.kube.ConfigMapData(r.Context(), a.cfg.ConfigMap)
+		if err == nil && data[a.cfg.ConfigMapKey] == "" {
+			err = fmt.Errorf("ConfigMap %s has no key %q", a.cfg.ConfigMap, a.cfg.ConfigMapKey)
+		}
+		if err != nil {
 			out["configmap_error"] = err.Error()
 		} else {
-			out["configmap"] = v
+			out["configmap"] = data[a.cfg.ConfigMapKey]
+			out["motd"] = data[a.cfg.MotdKey]
 			out["editable"] = true
 			out["configmap_name"] = a.cfg.ConfigMap
 		}
@@ -785,13 +796,25 @@ func (a *App) getConfig(w http.ResponseWriter, r *http.Request, s *session) (any
 	return out, nil
 }
 
+// normalizeMotd keeps a single trailing newline, so the text compares equal
+// to the file the kubelet writes from the ConfigMap.
+func normalizeMotd(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.TrimRight(s, "\n\t ")
+	if s == "" {
+		return ""
+	}
+	return s + "\n"
+}
+
 func (a *App) putConfig(w http.ResponseWriter, r *http.Request, s *session) (any, error) {
 	if a.kube == nil || a.cfg.ConfigMap == "" {
 		return nil, badRequest("editing the config requires ConfigMap access (SOJU_CONFIGMAP)")
 	}
 	var req struct {
-		Content string `json:"content"`
-		Apply   string `json:"apply"` // none, reload, restart
+		Content string  `json:"content"`
+		Motd    *string `json:"motd"`  // nil = leave the MOTD key untouched
+		Apply   string  `json:"apply"` // none, reload, restart
 	}
 	if err := decode(r, &req); err != nil {
 		return nil, err
@@ -802,37 +825,63 @@ func (a *App) putConfig(w http.ResponseWriter, r *http.Request, s *session) (any
 	if !strings.HasSuffix(req.Content, "\n") {
 		req.Content += "\n"
 	}
-	if check := checkConfig(req.Content, a.cfg); len(check.Errors) > 0 {
+	current, err := a.kube.ConfigMapData(r.Context(), a.cfg.ConfigMap)
+	if err != nil {
+		return nil, err
+	}
+	motd := current[a.cfg.MotdKey]
+	if req.Motd != nil {
+		motd = normalizeMotd(*req.Motd)
+	}
+	if check := checkConfig(req.Content, motd, a.cfg); len(check.Errors) > 0 {
 		return nil, &httpError{http.StatusUnprocessableEntity, "invalid configuration:\n" + strings.Join(check.Errors, "\n")}
 	}
+
+	patch := map[string]*string{a.cfg.ConfigMapKey: &req.Content}
+	if req.Motd != nil && motd != current[a.cfg.MotdKey] {
+		if motd == "" {
+			patch[a.cfg.MotdKey] = nil // JSON null removes the key
+		} else {
+			patch[a.cfg.MotdKey] = &motd
+		}
+	}
+
 	return a.jobs.Start("apply configuration", s.user, 5*time.Minute, func(ctx context.Context, j *Job) error {
-		backup := fmt.Sprintf("%s/config-%s.bak", a.store.BackupDir, time.Now().UTC().Format("20060102-150405"))
+		stamp := time.Now().UTC().Format("20060102-150405")
+		os.MkdirAll(a.store.BackupDir, 0o700)
 		if old, err := os.ReadFile(a.cfg.SojuConfig); err == nil {
-			os.MkdirAll(a.store.BackupDir, 0o700)
+			backup := fmt.Sprintf("%s/config-%s.bak", a.store.BackupDir, stamp)
 			if err := os.WriteFile(backup, old, 0o600); err == nil {
 				j.Logf("previous config saved to %s", backup)
 			}
 		}
-		if err := a.kube.SetConfigMapKey(ctx, a.cfg.ConfigMap, a.cfg.ConfigMapKey, req.Content); err != nil {
+		if old, err := os.ReadFile(a.cfg.MotdPath); err == nil && len(patch) > 1 {
+			backup := fmt.Sprintf("%s/motd-%s.bak", a.store.BackupDir, stamp)
+			if err := os.WriteFile(backup, old, 0o600); err == nil {
+				j.Logf("previous message of the day saved to %s", backup)
+			}
+		}
+		if err := a.kube.PatchConfigMap(ctx, a.cfg.ConfigMap, patch); err != nil {
 			return err
 		}
-		j.Logf("ConfigMap %s updated", a.cfg.ConfigMap)
+		if _, ok := patch[a.cfg.MotdKey]; ok {
+			j.Logf("ConfigMap %s updated (config and message of the day)", a.cfg.ConfigMap)
+		} else {
+			j.Logf("ConfigMap %s updated", a.cfg.ConfigMap)
+		}
 		if req.Apply == "none" || req.Apply == "" {
-			j.Logf("not applied: the kubelet will sync the file in ~1 min; reload or restart whenever you want")
+			j.Logf("not applied: the kubelet will sync the files in ~1 min; reload or restart whenever you want")
 			return nil
 		}
-		j.Logf("waiting for the kubelet to update %s (can take up to ~2 min)…", a.cfg.SojuConfig)
-		for {
-			if cur, err := os.ReadFile(a.cfg.SojuConfig); err == nil && string(cur) == req.Content {
-				break
-			}
+		j.Logf("waiting for the kubelet to update %s (can take up to ~2 min)…", path.Dir(a.cfg.SojuConfig))
+		for !a.filesSynced(req.Content, motd) {
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("the mounted file was not updated in time")
+				return fmt.Errorf("the mounted files were not updated in time")
 			case <-time.After(2 * time.Second):
 			}
 		}
-		j.Logf("file updated inside the container")
+		j.Logf("files updated inside the container")
 		if req.Apply == "restart" {
 			return restartSoju(ctx, a.bouncer, j.Logf)
 		}
@@ -843,6 +892,20 @@ func (a *App) putConfig(w http.ResponseWriter, r *http.Request, s *session) (any
 		j.Logf("sent SIGHUP to soju (pid %d); check the logs for reload errors", pid)
 		return nil
 	})
+}
+
+// filesSynced reports whether the mounted ConfigMap already reflects the
+// new config and MOTD (a removed MOTD key means the file is gone).
+func (a *App) filesSynced(config, motd string) bool {
+	cur, err := os.ReadFile(a.cfg.SojuConfig)
+	if err != nil || string(cur) != config {
+		return false
+	}
+	curMotd, err := os.ReadFile(a.cfg.MotdPath)
+	if motd == "" {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	return err == nil && string(curMotd) == motd
 }
 
 func (a *App) logs(w http.ResponseWriter, r *http.Request, s *session) (any, error) {

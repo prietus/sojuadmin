@@ -260,24 +260,26 @@ func (k *Kube) do(ctx context.Context, method, path, contentType string, body io
 	return data, nil
 }
 
-func (k *Kube) ConfigMapKey(ctx context.Context, name, key string) (string, error) {
+func (k *Kube) ConfigMapData(ctx context.Context, name string) (map[string]string, error) {
 	data, err := k.do(ctx, "GET", fmt.Sprintf("/api/v1/namespaces/%s/configmaps/%s", k.namespace, url.PathEscape(name)), "", nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var cm struct{ Data map[string]string }
 	if err := json.Unmarshal(data, &cm); err != nil {
-		return "", err
+		return nil, err
 	}
-	v, ok := cm.Data[key]
-	if !ok {
-		return "", fmt.Errorf("ConfigMap %s has no key %q", name, key)
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
 	}
-	return v, nil
+	return cm.Data, nil
 }
 
-func (k *Kube) SetConfigMapKey(ctx context.Context, name, key, value string) error {
-	patch, _ := json.Marshal(map[string]any{"data": map[string]string{key: value}})
+// PatchConfigMap sets several keys at once; a nil value removes the key.
+// The kubelet swaps all files of a ConfigMap volume atomically, so soju
+// never sees the config and its MOTD out of sync.
+func (k *Kube) PatchConfigMap(ctx context.Context, name string, data map[string]*string) error {
+	patch, _ := json.Marshal(map[string]any{"data": data})
 	_, err := k.do(ctx, "PATCH", fmt.Sprintf("/api/v1/namespaces/%s/configmaps/%s", k.namespace, url.PathEscape(name)),
 		"application/merge-patch+json", bytes.NewReader(patch))
 	return err

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -56,7 +57,12 @@ var listenSchemes = map[string]bool{
 	"http+pprof": true, "unix+admin": true,
 }
 
-func checkConfig(text string, cfg Config) ConfigCheck {
+// maxConfigMapBytes leaves headroom under Kubernetes' 1 MiB ConfigMap limit.
+const maxConfigMapBytes = 1000 * 1000
+
+// checkConfig validates the config text together with the MOTD text that
+// will be stored next to it in the ConfigMap ("" = no MOTD key).
+func checkConfig(text, motd string, cfg Config) ConfigCheck {
 	res := ConfigCheck{Errors: []string{}, Warnings: []string{}}
 	errf := func(format string, args ...any) { res.Errors = append(res.Errors, fmt.Sprintf(format, args...)) }
 	warnf := func(format string, args ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, args...)) }
@@ -69,6 +75,7 @@ func checkConfig(text string, cfg Config) ConfigCheck {
 
 	seen := map[string]int{}
 	adminSocket := false
+	motdPath := ""
 	for _, d := range block {
 		seen[d.Name]++
 		limits, known := sojuDirectives[d.Name]
@@ -100,6 +107,20 @@ func checkConfig(text string, cfg Config) ConfigCheck {
 			}
 			if scheme == "unix+admin" && path.Clean(u.Host+u.Path) == path.Clean(cfg.SocketPath) {
 				adminSocket = true
+			}
+		case "motd":
+			motdPath = p[0]
+			switch {
+			case path.Clean(p[0]) == path.Clean(cfg.MotdPath):
+				if motd == "" {
+					errf("motd points to %s but the message of the day is empty: soju would fail to start", cfg.MotdPath)
+				}
+			case strings.HasPrefix(p[0], "/data/") || strings.HasPrefix(p[0], path.Dir(cfg.MotdPath)+"/"):
+				if _, err := os.Stat(p[0]); err != nil {
+					errf("motd file %s does not exist: soju would fail to start", p[0])
+				}
+			default:
+				warnf("can't verify that %s exists inside the soju container; soju won't start if it doesn't", p[0])
 			}
 		case "accept-proxy-unix", "enable-user-on-auth", "client-cert-auth":
 			if p[0] != "true" && p[0] != "false" {
@@ -168,6 +189,12 @@ func checkConfig(text string, cfg Config) ConfigCheck {
 	sort.Strings(res.Errors)
 	if seen["log"] > 0 && seen["message-store"] > 0 {
 		warnf("both log and message-store are set; log is a deprecated alias")
+	}
+	if motd != "" && path.Clean(motdPath) != path.Clean(cfg.MotdPath) {
+		warnf("the message of the day is saved but unused: the motd directive doesn't point to %s", cfg.MotdPath)
+	}
+	if n := len(text) + len(motd); n > maxConfigMapBytes {
+		errf("config and message of the day together are %d bytes; a ConfigMap holds at most ~1 MB", n)
 	}
 	if !adminSocket {
 		errf("the config must keep \"listen unix+admin://%s\": this panel controls soju through that socket", cfg.SocketPath)

@@ -519,13 +519,14 @@ function channelForm(base, c, done) {
 
 // --- config
 
-const cfg = { info: null, base: "", text: "", mode: "form", checkTimer: null, check: null };
+const cfg = { info: null, base: "", text: "", baseMotd: "", motd: "", mode: "form", checkTimer: null, check: null };
 
 views.config = async () => {
   const c = await api("GET", "/api/config");
   cfg.info = c;
   cfg.base = c.configmap ?? c.live;
   cfg.text = cfg.base;
+  cfg.baseMotd = cfg.motd = c.motd || "";
   $("#config-live").textContent = c.live;
   $("#config-meta").textContent = c.editable
     ? `Editing ConfigMap "${c.configmap_name}", mounted at ${c.path}.` + (c.configmap !== c.live ? " ⚠ The ConfigMap and the mounted file differ (the kubelet hasn't synced yet, or the change was never applied)." : "")
@@ -540,7 +541,12 @@ function renderConfig() {
   form.hidden = cfg.mode !== "form";
   editor.hidden = cfg.mode !== "raw";
   if (cfg.mode === "form") {
-    ConfigForm.render(form, cfg.text, { adminSocket: cfg.info?.admin_socket, onChange: configChanged });
+    ConfigForm.render(form, cfg.text, {
+      adminSocket: cfg.info?.admin_socket,
+      motd: { text: cfg.motd, path: cfg.info?.motd_path },
+      onChange: configChanged,
+      onMotdChange: t => { cfg.motd = t; },
+    });
     form.querySelectorAll("input, select, textarea, button").forEach(el => { if (!editable) el.disabled = true; });
   } else {
     editor.value = cfg.text;
@@ -551,7 +557,7 @@ function renderConfig() {
 
 function configChanged(text) {
   cfg.text = text;
-  const dirty = cfg.text !== cfg.base;
+  const dirty = cfg.text !== cfg.base || motdChanged();
   $("[data-action=save-config]").disabled = !cfg.info?.editable || !dirty;
   $("[data-action=revert-config]").disabled = !dirty;
   clearTimeout(cfg.checkTimer);
@@ -561,7 +567,7 @@ function configChanged(text) {
 async function checkConfig() {
   const box = $("#config-check");
   try {
-    cfg.check = await api("POST", "/api/config/check", { content: cfg.text });
+    cfg.check = await api("POST", "/api/config/check", { content: cfg.text, motd: cfg.motd });
   } catch (e) {
     if (e.status !== 401) box.replaceChildren(h("div", { class: "callout bad" }, e.message));
     return;
@@ -582,13 +588,26 @@ $("#config-mode").addEventListener("click", ev => {
   renderConfig();
 });
 $("#config-editor").addEventListener("input", ev => configChanged(ev.target.value));
-$("[data-action=revert-config]").addEventListener("click", () => { cfg.text = cfg.base; renderConfig(); });
+$("[data-action=revert-config]").addEventListener("click", () => { cfg.text = cfg.base; cfg.motd = cfg.baseMotd; renderConfig(); });
+
+// Compare like the server does (one trailing newline), so retyping the same text isn't a change.
+const normMotd = t => { t = t.replace(/\r\n/g, "\n").replace(/[\n\t ]+$/, ""); return t ? t + "\n" : ""; };
+const motdChanged = () => normMotd(cfg.motd) !== normMotd(cfg.baseMotd);
+
+// diffEl shows changed lines with two lines of context around them.
+function diffEl(title, before, after) {
+  const lines = ConfigForm.diff(before, after)
+    .filter((d, i, all) => d[0] !== " " || all.slice(Math.max(0, i - 2), i + 3).some(x => x[0] !== " "))
+    .map(([op, line]) => h("span", { class: op === "+" ? "add" : op === "-" ? "del" : "" }, op + " " + line + "\n"));
+  return h("div", {}, h("h3", { style: "margin:0 0 6px" }, title), h("pre", { class: "code diff" }, lines));
+}
 
 $("[data-action=save-config]").addEventListener("click", async () => {
   await checkConfig();
   if (cfg.check?.errors.length) { toast("Fix the errors first", true); return; }
   const restart = ConfigForm.needsRestart(cfg.base, cfg.text);
   const content = cfg.text;
+  const motd = motdChanged() ? cfg.motd : undefined;
   openForm({
     title: "Review changes",
     fields: [{
@@ -597,14 +616,14 @@ $("[data-action=save-config]").addEventListener("click", async () => {
     }],
     ok: "Save",
     onSubmit: async v => {
-      runJob(api("PUT", "/api/config", { content, apply: v.apply }), () => views.config());
+      runJob(api("PUT", "/api/config", { content, motd, apply: v.apply }), () => views.config());
     },
   });
   const body = $("#modal-body");
-  body.prepend(
-    h("pre", { class: "code diff" }, ConfigForm.diff(cfg.base, content)
-      .filter((d, i, all) => d[0] !== " " || all.slice(Math.max(0, i - 2), i + 3).some(x => x[0] !== " "))
-      .map(([op, line]) => h("span", { class: op === "+" ? "add" : op === "-" ? "del" : "" }, op + " " + line + "\n"))));
+  body.prepend(...[
+    content !== cfg.base ? diffEl("config", cfg.base, content) : null,
+    motd !== undefined ? diffEl("message of the day", cfg.baseMotd, motd) : null,
+  ].filter(Boolean));
   if (restart) body.prepend(h("div", { class: "callout" }, "These changes touch listen, db or message-store, which only take effect after a restart."));
 });
 

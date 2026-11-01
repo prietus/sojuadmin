@@ -179,6 +179,8 @@ dialog footer { padding: 16px 18px; display: flex; justify-content: flex-end; ga
 .cfg-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .cfg-field.two { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .cfg-field:has(.listeners), .cfg-field:has(textarea.mono:only-child) { grid-column: 1 / -1; }
+.cfg-wide { grid-column: 1 / -1; }
+.cfg-wide > select { max-width: 320px; }
 .cfg-label { font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .cfg-sub { margin-top: 6px; }
 .cfg-field input, .cfg-field select, .cfg-field textarea { width: 100%; }

@@ -88,8 +88,12 @@ const ConfigForm = (() => {
         { key: "hostname", type: "text", label: "Hostname", placeholder: "irc.example.org", help: "Fully qualified domain name of the bouncer." },
         { key: "title", type: "text", label: "Title", help: "Shown as the network name to clients that haven't picked a network." },
         { key: "icon", type: "text", label: "Icon", placeholder: "https://example.org/icon.png", help: "An https:// URL, or a local path (needs an HTTP listener)." },
-        { key: "motd", type: "text", label: "MOTD file", placeholder: "/etc/soju/motd", help: "Path to a file holding the message of the day." },
       ],
+    },
+    {
+      title: "Message of the day",
+      intro: "Sent to clients that connect to the bouncer itself (not bound to a network). soju re-reads it on reload, no restart needed.",
+      fields: [{ key: "motd", type: "motd" }],
     },
     {
       title: "TLS",
@@ -220,7 +224,8 @@ const ConfigForm = (() => {
   // ---------- line diff (LCS) ----------
 
   function diff(a, b) {
-    const A = a.replace(/\n$/, "").split("\n"), B = b.replace(/\n$/, "").split("\n");
+    const lines = t => t === "" ? [] : t.replace(/\n$/, "").split("\n");
+    const A = lines(a), B = lines(b);
     const n = A.length, m = B.length;
     const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
     for (let i = n - 1; i >= 0; i--)
@@ -244,7 +249,9 @@ const ConfigForm = (() => {
 
   // ---------- form rendering ----------
 
-  function render(container, text, { adminSocket, onChange }) {
+  // motd: { text, path } — the managed MOTD stored in the ConfigMap next to
+  // the config; onMotdChange receives its new text ("" = no managed MOTD).
+  function render(container, text, { adminSocket, motd, onChange, onMotdChange }) {
     const lines = parse(text);
     const values = extract(lines);
     const readers = {}; // key -> () => list of param arrays
@@ -253,11 +260,14 @@ const ConfigForm = (() => {
       for (const [k, read] of Object.entries(readers)) next[k] = read();
       // Groups without a form field (e.g. a second auth line) stay as they are.
       for (const [k, v] of Object.entries(values)) if (!(k in next)) next[k] = v;
+      if (motdReader) onMotdChange(motdReader());
       onChange(merge(text, next));
     };
+    let motdReader = null;
+    const setMotdReader = fn => { motdReader = fn; };
 
     const sections = SECTIONS.map(sec => {
-      const body = sec.fields.map(f => fieldEl(f, values[f.key] || [], readers, emit, { adminSocket }));
+      const body = sec.fields.map(f => fieldEl(f, values[f.key] || [], readers, emit, { adminSocket, motd, setMotdReader }));
       if (sec.fields[0].type === "other" && !(values.__other || []).length) return null;
       return h("section", { class: "panel cfg-section" },
         h("h2", {}, sec.title),
@@ -348,6 +358,8 @@ const ConfigForm = (() => {
       }
       case "listeners":
         return listenersEl(f, current, readers, emit, opts);
+      case "motd":
+        return motdEl(f, first, readers, emit, opts);
       case "other": {
         const ta = on(h("textarea", { rows: 4, class: "mono" }));
         ta.value = current.map(p => p[0]).join("\n");
@@ -355,6 +367,42 @@ const ConfigForm = (() => {
         return h("div", { class: "cfg-field" }, ta);
       }
     }
+  }
+
+  function motdEl(f, current, readers, emit, { motd, setMotdReader }) {
+    const managed = motd?.path || "/etc/soju/motd";
+    const path = current[0] || "";
+    const mode = h("select", {},
+      h("option", { value: "none" }, "No message of the day"),
+      h("option", { value: "text" }, "Write it here"),
+      h("option", { value: "file" }, "Use an existing file"));
+    mode.value = !path ? (motd?.text ? "text" : "none") : path === managed ? "text" : "file";
+
+    const text = h("textarea", { rows: 6, class: "mono", placeholder: "Welcome to the bouncer!\nRules: be nice." });
+    text.value = motd?.text || "";
+    const file = h("input", { class: "mono", placeholder: "/data/motd" });
+    file.value = path !== managed ? path : "";
+
+    const textWrap = h("div", { class: "cfg-field" }, text,
+      h("span", { class: "hint" }, `Stored in the ConfigMap and mounted at ${managed}. Each line is sent as a separate MOTD line.`));
+    const fileWrap = h("label", { class: "cfg-sub" }, "File path inside the soju container", file,
+      h("span", { class: "hint" }, "soju won't start if the file doesn't exist."));
+    const sync = () => {
+      textWrap.hidden = mode.value !== "text";
+      fileWrap.hidden = mode.value !== "file";
+    };
+    for (const el of [mode, text, file]) { el.addEventListener("input", emit); el.addEventListener("change", emit); }
+    mode.addEventListener("change", sync);
+    sync();
+
+    readers[f.key] = () => {
+      if (mode.value === "text") return text.value.trim() ? [[managed]] : [];
+      if (mode.value === "file") return file.value.trim() ? [[file.value.trim()]] : [];
+      return [];
+    };
+    // The text is kept while the box is visible; other modes drop the stored MOTD.
+    setMotdReader(() => mode.value === "text" ? text.value : "");
+    return h("div", { class: "cfg-field cfg-wide" }, mode, textWrap, fileWrap);
   }
 
   function splitListen(uri) {

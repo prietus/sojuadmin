@@ -29,6 +29,8 @@ type Config struct {
 	SojuConfig    string
 	ConfigMap     string
 	ConfigMapKey  string
+	MotdKey       string
+	MotdPath      string
 	PodName       string
 	SojuContainer string
 	SecureCookie  bool
@@ -43,17 +45,23 @@ func env(key, def string) string {
 
 func loadConfig() Config {
 	data := env("SOJU_DATA_DIR", "/data")
+	sojuConfig := env("SOJU_CONFIG", "/etc/soju/config")
+	motdKey := env("SOJU_MOTD_KEY", "motd")
 	keep, _ := strconv.Atoi(env("KEEP_BACKUPS", "10"))
 	return Config{
-		Listen:        env("LISTEN", ":8090"),
-		DataDir:       data,
-		SocketPath:    env("SOJU_ADMIN_SOCKET", filepath.Join(data, "admin.sock")),
-		DBPath:        env("SOJU_DB", filepath.Join(data, "soju.db")),
-		BackupDir:     env("BACKUP_DIR", filepath.Join(data, "backups")),
-		KeepBackups:   keep,
-		SojuConfig:    env("SOJU_CONFIG", "/etc/soju/config"),
-		ConfigMap:     os.Getenv("SOJU_CONFIGMAP"),
-		ConfigMapKey:  env("SOJU_CONFIGMAP_KEY", "config"),
+		Listen:       env("LISTEN", ":8090"),
+		DataDir:      data,
+		SocketPath:   env("SOJU_ADMIN_SOCKET", filepath.Join(data, "admin.sock")),
+		DBPath:       env("SOJU_DB", filepath.Join(data, "soju.db")),
+		BackupDir:    env("BACKUP_DIR", filepath.Join(data, "backups")),
+		KeepBackups:  keep,
+		SojuConfig:   sojuConfig,
+		ConfigMap:    os.Getenv("SOJU_CONFIGMAP"),
+		ConfigMapKey: env("SOJU_CONFIGMAP_KEY", "config"),
+		// The ConfigMap is mounted as a directory, so its MOTD key shows up
+		// as a file next to the config.
+		MotdKey:       motdKey,
+		MotdPath:      filepath.Join(filepath.Dir(sojuConfig), motdKey),
 		PodName:       os.Getenv("POD_NAME"),
 		SojuContainer: env("SOJU_CONTAINER", "soju"),
 		SecureCookie:  env("SECURE_COOKIE", "true") == "true",

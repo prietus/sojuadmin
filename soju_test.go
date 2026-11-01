@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,11 +110,11 @@ func TestPurge(t *testing.T) {
 }
 
 func TestCheckConfig(t *testing.T) {
-	cfg := Config{SocketPath: "/data/admin.sock", DBPath: "/data/soju.db"}
+	cfg := Config{SocketPath: "/data/admin.sock", DBPath: "/data/soju.db", MotdPath: "/etc/soju/motd"}
 	good := "# comment\nlisten irc+insecure://0.0.0.0:6667\nlisten unix+admin:///data/admin.sock\nhostname irc.example.org\n" +
 		"db sqlite3 /data/soju.db\nmessage-store db\nhttp-ingress https://web.example.org\nmessage-expiry 90d\n" +
 		"file-upload http http://uploader:8081/upload\naccept-proxy-ip localhost 10.0.0.0/8\n"
-	if res := checkConfig(good, cfg); len(res.Errors) != 0 || len(res.Warnings) != 0 {
+	if res := checkConfig(good, "", cfg); len(res.Errors) != 0 || len(res.Warnings) != 0 {
 		t.Errorf("good config: %+v", res)
 	}
 	for name, text := range map[string]string{
@@ -124,8 +128,93 @@ func TestCheckConfig(t *testing.T) {
 		"syntax":          "listen unix+admin:///data/admin.sock\ntitle \"unterminated\n",
 		"tls one param":   "listen unix+admin:///data/admin.sock\ntls cert.pem\n",
 	} {
-		if res := checkConfig(text, cfg); len(res.Errors) == 0 {
+		if res := checkConfig(text, "", cfg); len(res.Errors) == 0 {
 			t.Errorf("%s: expected errors, got %+v", name, res)
 		}
+	}
+}
+
+func TestCheckConfigMotd(t *testing.T) {
+	cfg := Config{SocketPath: "/data/admin.sock", DBPath: "/data/soju.db", MotdPath: "/etc/soju/motd"}
+	base := "listen unix+admin:///data/admin.sock\n"
+	withMotd := base + "motd /etc/soju/motd\n"
+
+	if res := checkConfig(withMotd, "Welcome!\n", cfg); len(res.Errors)+len(res.Warnings) != 0 {
+		t.Errorf("managed motd: %+v", res)
+	}
+	if res := checkConfig(withMotd, "", cfg); len(res.Errors) == 0 {
+		t.Error("motd pointing to an empty managed file should be an error")
+	}
+	if res := checkConfig(base, "Welcome!\n", cfg); len(res.Warnings) == 0 {
+		t.Error("unused motd text should warn")
+	}
+	if res := checkConfig(base+"motd /data/does-not-exist\n", "", cfg); len(res.Errors) == 0 {
+		t.Error("missing motd file under /data should be an error")
+	}
+	if res := checkConfig(base+"motd /srv/motd\n", "", cfg); len(res.Errors) != 0 || len(res.Warnings) == 0 {
+		t.Errorf("unverifiable motd path should only warn: %+v", res)
+	}
+	if res := checkConfig(withMotd, strings.Repeat("x", maxConfigMapBytes), cfg); len(res.Errors) == 0 {
+		t.Error("oversized motd should be an error")
+	}
+}
+
+func TestNormalizeMotd(t *testing.T) {
+	for in, want := range map[string]string{"": "", " \n\n": "", "hi": "hi\n", "a\r\nb\n\n\n": "a\nb\n"} {
+		if got := normalizeMotd(in); got != want {
+			t.Errorf("normalizeMotd(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPatchConfigMap(t *testing.T) {
+	var gotType string
+	var gotBody map[string]map[string]*string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" || r.URL.Path != "/api/v1/namespaces/soju/configmaps/soju-config" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		gotType = r.Header.Get("Content-Type")
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	token := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(token, []byte("t"), 0o600)
+	k := &Kube{base: srv.URL, namespace: "soju", client: srv.Client(), tokenPath: token}
+
+	config := "listen ircs://\n"
+	if err := k.PatchConfigMap(context.Background(), "soju-config", map[string]*string{"config": &config, "motd": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if gotType != "application/merge-patch+json" {
+		t.Errorf("content type %q", gotType)
+	}
+	data := gotBody["data"]
+	if v, ok := data["motd"]; !ok || v != nil {
+		t.Errorf("motd should be sent as JSON null to delete the key, got %v (present %v)", v, ok)
+	}
+	if data["config"] == nil || *data["config"] != config {
+		t.Errorf("config not sent: %v", data["config"])
+	}
+}
+
+func TestFilesSynced(t *testing.T) {
+	dir := t.TempDir()
+	a := &App{cfg: Config{SojuConfig: filepath.Join(dir, "config"), MotdPath: filepath.Join(dir, "motd")}}
+	os.WriteFile(a.cfg.SojuConfig, []byte("new\n"), 0o644)
+	if a.filesSynced("new\n", "hi\n") {
+		t.Error("motd file missing: not synced yet")
+	}
+	os.WriteFile(a.cfg.MotdPath, []byte("hi\n"), 0o644)
+	if !a.filesSynced("new\n", "hi\n") {
+		t.Error("both files match: should be synced")
+	}
+	if a.filesSynced("new\n", "") {
+		t.Error("motd removed but file still present: not synced yet")
+	}
+	os.Remove(a.cfg.MotdPath)
+	if !a.filesSynced("new\n", "") {
+		t.Error("motd removed and file gone: should be synced")
 	}
 }
