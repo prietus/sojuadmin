@@ -250,17 +250,28 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request, s *session) (any
 		name, _, _ = strings.Cut(name, ":")
 		loaded[name] = true
 	}
+	ids := make([]int64, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	upstream, upstreamErr := upstreamIPsByUser(a.cfg.SojuConfig, ids)
+
 	type userOut struct {
 		User
 		Loaded bool `json:"loaded"`
+		// nil when upstream-user-ip isn't set: soju uses the host's default address.
+		UpstreamIPs []UpstreamIP `json:"upstream_ips"`
 	}
 	out := make([]userOut, 0, len(users))
 	for _, u := range users {
-		out = append(out, userOut{u, loaded[u.Username]})
+		out = append(out, userOut{u, loaded[u.Username], upstream[u.ID]})
 	}
 	res := map[string]any{"users": out}
 	if statusErr != nil {
 		res["status_error"] = statusErr.Error()
+	}
+	if upstreamErr != nil {
+		res["upstream_error"] = upstreamErr.Error()
 	}
 	return res, nil
 }

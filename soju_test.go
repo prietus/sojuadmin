@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -216,5 +218,58 @@ func TestFilesSynced(t *testing.T) {
 	os.Remove(a.cfg.MotdPath)
 	if !a.filesSynced("new\n", "") {
 		t.Error("motd removed and file gone: should be synced")
+	}
+}
+
+func TestUserUpstreamIP(t *testing.T) {
+	for _, c := range []struct {
+		cidr string
+		id   int64
+		want string
+	}{
+		{"2a0c:b642:a00:6c09:50:7a::/96", 1, "2a0c:b642:a00:6c09:50:7a:0:2"},
+		{"2a0c:b642:a00:6c09:50:7a::/96", 2, "2a0c:b642:a00:6c09:50:7a:0:3"},
+		{"2a0c:b642:a00:6c09:50:7a::/96", 65535, "2a0c:b642:a00:6c09:50:7a:1:0"},
+		{"192.0.2.0/24", 1, "192.0.2.2"},
+	} {
+		_, n, _ := net.ParseCIDR(c.cidr)
+		ip, err := userUpstreamIP(n, c.id)
+		if err != nil || ip.String() != c.want {
+			t.Errorf("%s id %d = %v, %v; want %s", c.cidr, c.id, ip, err, c.want)
+		}
+	}
+	_, small, _ := net.ParseCIDR("192.0.2.0/30")
+	if _, err := userUpstreamIP(small, 5); err == nil {
+		t.Error("expected range too small error")
+	}
+}
+
+func TestParseProcNetTCP(t *testing.T) {
+	tcp6 := `  sl  local_address                         remote_address                        st tx_queue rx_queue
+   0: 42B60C2A096C000A7A00500002000000:8A4F 00000000000000000000000001000000:1A2B 01 00000000:00000000
+   1: 42B60C2A096C000A7A00500003000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000
+`
+	tcp4 := `  sl  local_address rem_address   st
+   0: 0100007F:1F90 0100007F:D3A2 01 00000000:00000000
+`
+	got := map[string]bool{}
+	parseProcNetTCP(bufio.NewScanner(strings.NewReader(tcp6)), got)
+	parseProcNetTCP(bufio.NewScanner(strings.NewReader(tcp4)), got)
+	want := map[string]bool{"2a0c:b642:a00:6c09:50:7a:0:2": true, "127.0.0.1": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v (listening sockets must be ignored)", got, want)
+	}
+}
+
+func TestUpstreamRanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(path, []byte("listen ircs://\nupstream-user-ip 192.0.2.0/24 2001:db8::/64\n"), 0o644)
+	ranges, err := upstreamRanges(path)
+	if err != nil || len(ranges) != 2 || ranges[1].String() != "2001:db8::/64" {
+		t.Errorf("got %v, %v", ranges, err)
+	}
+	os.WriteFile(path, []byte("listen ircs://\n"), 0o644)
+	if ranges, err := upstreamRanges(path); err != nil || len(ranges) != 0 {
+		t.Errorf("no directive: got %v, %v", ranges, err)
 	}
 }

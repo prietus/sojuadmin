@@ -10,7 +10,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: soju-admin
-          image: prietus/soju-admin:0.3.0
+          image: prietus/soju-admin:0.4.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: admin

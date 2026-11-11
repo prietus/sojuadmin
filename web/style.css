@@ -202,3 +202,6 @@ pre.diff .del { color: #f08b82; }
   .listener select { grid-column: 1 / -1; }
   .cfg-field.two { grid-template-columns: 1fr; }
 }
+
+.ip-list { display: flex; flex-direction: column; gap: 4px; }
+.ip-list code { font-size: 12.5px; }

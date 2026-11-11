@@ -253,13 +253,16 @@ views.users = async () => {
   const res = await api("GET", "/api/users");
   usersCache = res.users;
   if (res.status_error) toast("Could not fetch live status: " + res.status_error, true);
+  if (res.upstream_error) toast("Could not read upstream-user-ip: " + res.upstream_error, true);
   const ul = $("#user-list");
   ul.replaceChildren(...usersCache.map(u => h("li", {
     class: u.username === selectedUser ? "active" : "",
+    dataset: { user: u.username },
     onclick: () => { selectedUser = u.username; views.users(); },
   },
-  h("span", {}, u.username),
+  h("span", {}, h("span", { class: "muted small" }, "#" + u.id + " "), u.username),
   h("span", { class: "row gap" },
+    (u.upstream_ips || []).some(ip => !ip.configured) ? badge("IP missing", "bad") : null,
     u.admin ? badge("admin", "accent") : null,
     !u.enabled ? badge("off", "bad") : null,
     badge(u.networks + (u.networks === 1 ? " network" : " networks"))))));
@@ -269,13 +272,15 @@ views.users = async () => {
 };
 
 async function renderUser(u) {
-  document.querySelectorAll("#user-list li").forEach(li => li.classList.toggle("active", li.firstChild.textContent === u.username));
+  document.querySelectorAll("#user-list li").forEach(li => li.classList.toggle("active", li.dataset.user === u.username));
   const detail = $("#user-detail");
   const self = me && u.username === me.user;
   const head = h("div", { class: "user-head" },
     h("div", {},
       h("h2", { style: "margin-bottom:6px" }, u.username, " ", u.admin ? badge("admin", "accent") : null, " ", u.enabled ? badge("enabled", "ok") : badge("disabled", "bad"), " ", !u.loaded && u.enabled ? badge("not loaded", "warn") : null),
       h("dl", { class: "kv" },
+        h("dt", {}, "ID"), h("dd", {}, u.id),
+        h("dt", {}, "Outgoing IP"), h("dd", {}, upstreamIPsEl(u)),
         h("dt", {}, "Nick"), h("dd", {}, u.nick || "—"),
         h("dt", {}, "Realname"), h("dd", {}, u.realname || "—"),
         h("dt", {}, "Max networks"), h("dd", {}, u.max_networks < 0 ? "unlimited" : u.max_networks),
@@ -296,6 +301,20 @@ async function renderUser(u) {
   if (res.status_error) netsBox.append(h("p", { class: "error" }, "Live status unavailable: " + res.status_error));
   if (!res.networks.length) { netsBox.replaceChildren(h("p", { class: "muted" }, "No networks.")); return; }
   netsBox.replaceChildren(...res.networks.map(n => networkCard(u.username, n)));
+}
+
+// upstreamIPsEl shows the per-user source address(es) from upstream-user-ip
+// and whether the host actually has them.
+function upstreamIPsEl(u) {
+  if (!u.upstream_ips) return h("span", { class: "muted" }, "server default (no upstream-user-ip)");
+  return h("div", { class: "ip-list" }, u.upstream_ips.map(ip => ip.error
+    ? h("div", {}, badge("error", "bad"), " ", ip.error)
+    : h("div", {},
+      h("code", {}, ip.ip), " ",
+      !ip.configured ? badge("missing on host", "bad")
+        : ip.active ? badge("active", "ok")
+        : badge("idle", ""),
+      !ip.configured ? h("div", { class: "hint" }, `Add ${ip.ip} to the node (e.g. soju-ipv6.service on the soju host), or this user can't connect to ${ip.range.includes(":") ? "IPv6" : "IPv4"} networks.`) : null)));
 }
 
 function stateBadge(state) {
