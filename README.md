@@ -78,6 +78,21 @@ WantedBy=multi-user.target
 
 Build the binary with `go install github.com/prietus/sojuadmin@latest` (or `go build`). Put a TLS reverse proxy such as Caddy or nginx in front of it; serving it over plain http requires `SECURE_COOKIE=false`, or the session cookie is never sent.
 
+## Per-user upstream IPv6
+
+soju's `upstream-user-ip` gives every user its own source address towards IRC networks, so one user's ban doesn't hit everyone. soju doesn't configure any addresses itself: it computes **range base + (user ID + 1)** and binds to it, so with `upstream-user-ip 2001:db8:0:1:50:7a::/96` user ID 1 connects from `…:50:7a:0:2`, ID 2 from `…:0:3`, ID 9 from `…:0:a` (hex). If that address isn't assigned on the host, the user can't connect.
+
+The panel shows each user's ID and outgoing address on the Users page, marked **active** (soju has connections from it), **idle**, or **missing on host**, which is the state a newly created user lands in until its address is added.
+
+A setup that works with a /64 routed to the LAN (e.g. via radvd):
+
+1. **Pick a sub-range** away from SLAAC addresses, e.g. a /96 inside your /64.
+2. **Assign a pool of addresses on one node** with [`deploy/soju-ipv6.service`](deploy/soju-ipv6.service): set `PREFIX`, `IFACE` and `LAST_ID`, install it under `/etc/systemd/system/` and `systemctl enable --now soju-ipv6`. It adds the addresses with `preferred_lft 0`, so the node keeps using its own address for its traffic and only explicit binds (soju) use them. To grow the pool, raise `LAST_ID` and run `systemctl daemon-reload && systemctl reload soju-ipv6`; **don't restart it**, since stopping removes the addresses and drops soju's live connections.
+3. **Run soju on that node's network** with [`deploy/ipv6-hostnetwork.yaml`](deploy/ipv6-hostnetwork.yaml): `hostNetwork: true`, pinned to the node, with `dnsPolicy: ClusterFirstWithHostNet` so cluster service names still resolve. Check that soju's ports (6667, 8080) and the panel's (8090) are free on the node first. If that node goes down, soju stays down until you change the selector.
+4. **Set the range** in the config (Configuration → Proxies & networking → Per-user outgoing IP ranges) and restart soju once.
+
+Reverse DNS for those addresses is up to whoever delegates the reverse zone for your prefix. Many IRC networks also ban IPv6 per /64, so per-user addresses separate users' identities but don't guarantee a ban stays limited to one of them.
+
 ## Environment
 
 | Variable | Default |

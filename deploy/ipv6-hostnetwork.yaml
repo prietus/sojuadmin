@@ -1,0 +1,15 @@
+# Strategic merge patch for deployment/soju, for per-user upstream IPv6
+# (upstream-user-ip). soju has to run on the host network of the node that
+# holds the addresses (see soju-ipv6.service), so the pod is pinned to it.
+#
+# Copy to ipv6-hostnetwork.local.yaml (git-ignored), set your node name, then:
+#   kubectl -n soju patch deployment soju --patch-file deploy/ipv6-hostnetwork.local.yaml
+# Undo: kubectl -n soju rollout undo deployment/soju
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      # Keep resolving cluster services (e.g. a file-upload backend *.svc).
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: your-node

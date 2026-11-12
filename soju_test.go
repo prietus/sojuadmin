@@ -227,9 +227,9 @@ func TestUserUpstreamIP(t *testing.T) {
 		id   int64
 		want string
 	}{
-		{"2a0c:b642:a00:6c09:50:7a::/96", 1, "2a0c:b642:a00:6c09:50:7a:0:2"},
-		{"2a0c:b642:a00:6c09:50:7a::/96", 2, "2a0c:b642:a00:6c09:50:7a:0:3"},
-		{"2a0c:b642:a00:6c09:50:7a::/96", 65535, "2a0c:b642:a00:6c09:50:7a:1:0"},
+		{"2001:db8:0:1:50:7a::/96", 1, "2001:db8:0:1:50:7a:0:2"},
+		{"2001:db8:0:1:50:7a::/96", 2, "2001:db8:0:1:50:7a:0:3"},
+		{"2001:db8:0:1:50:7a::/96", 65535, "2001:db8:0:1:50:7a:1:0"},
 		{"192.0.2.0/24", 1, "192.0.2.2"},
 	} {
 		_, n, _ := net.ParseCIDR(c.cidr)
@@ -246,8 +246,8 @@ func TestUserUpstreamIP(t *testing.T) {
 
 func TestParseProcNetTCP(t *testing.T) {
 	tcp6 := `  sl  local_address                         remote_address                        st tx_queue rx_queue
-   0: 42B60C2A096C000A7A00500002000000:8A4F 00000000000000000000000001000000:1A2B 01 00000000:00000000
-   1: 42B60C2A096C000A7A00500003000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000
+   0: B80D0120010000007A00500002000000:8A4F 00000000000000000000000001000000:1A2B 01 00000000:00000000
+   1: B80D0120010000007A00500003000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000
 `
 	tcp4 := `  sl  local_address rem_address   st
    0: 0100007F:1F90 0100007F:D3A2 01 00000000:00000000
@@ -255,7 +255,7 @@ func TestParseProcNetTCP(t *testing.T) {
 	got := map[string]bool{}
 	parseProcNetTCP(bufio.NewScanner(strings.NewReader(tcp6)), got)
 	parseProcNetTCP(bufio.NewScanner(strings.NewReader(tcp4)), got)
-	want := map[string]bool{"2a0c:b642:a00:6c09:50:7a:0:2": true, "127.0.0.1": true}
+	want := map[string]bool{"2001:db8:0:1:50:7a:0:2": true, "127.0.0.1": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v (listening sockets must be ignored)", got, want)
 	}

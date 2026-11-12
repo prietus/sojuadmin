@@ -1,0 +1,27 @@
+# Per-user outgoing IPv6 addresses for soju (upstream-user-ip 2001:db8:0:1:50:7a::/96).
+# Example: install on the node soju runs on, as /etc/systemd/system/soju-ipv6.service,
+# after setting PREFIX (first 112 bits of your range) and IFACE below.
+# soju picks base + (user ID + 1), so user IDs 1..13 use ::2..::e (hex).
+#
+# To grow the pool: raise LAST_ID, then
+#   systemctl daemon-reload && systemctl reload soju-ipv6
+# "reload" only adds addresses. Don't use "restart": it removes them all
+# first and drops soju's live connections.
+#
+# preferred_lft 0 keeps the node itself from using them as default source
+# addresses; explicit binds (soju) still work.
+[Unit]
+Description=IPv6 addresses for soju per-user upstream connections
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PREFIX=2001:db8:0:1:50:7a:0 IFACE=eth0 FIRST_ID=1 LAST_ID=13
+ExecStart=/bin/sh -c 'for id in $$(seq $$FIRST_ID $$LAST_ID); do /usr/sbin/ip -6 addr replace $$PREFIX:$$(printf %%x $$((id + 1)))/128 dev $$IFACE preferred_lft 0; done'
+ExecReload=/bin/sh -c 'for id in $$(seq $$FIRST_ID $$LAST_ID); do /usr/sbin/ip -6 addr replace $$PREFIX:$$(printf %%x $$((id + 1)))/128 dev $$IFACE preferred_lft 0; done'
+ExecStop=/bin/sh -c 'for id in $$(seq $$FIRST_ID $$LAST_ID); do /usr/sbin/ip -6 addr del $$PREFIX:$$(printf %%x $$((id + 1)))/128 dev $$IFACE 2>/dev/null; done; true'
+
+[Install]
+WantedBy=multi-user.target
